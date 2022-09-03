@@ -164,7 +164,9 @@ def create_model(
     super_res_condition=False
 ):
     if channel_mult == "":
-        if image_size == 512:
+        if image_size == 1024:
+            channel_mult = (1, 1, 2, 2, 4, 4)
+        elif image_size == 512:
             channel_mult = (0.5, 1, 1, 2, 2, 4, 4)
         elif image_size == 256:
             channel_mult = (1, 1, 2, 2, 4, 4)
@@ -177,14 +179,14 @@ def create_model(
         else:
             raise ValueError(f"unsupported image size: {image_size}")
     else:
-        channel_mult = tuple(int(ch_mult) for ch_mult in channel_mult.split(","))
+        channel_mult = tuple(float(ch_mult) for ch_mult in channel_mult.split(","))
 
     attention_ds = []
     for res in attention_resolutions.split(","):
         attention_ds.append(image_size // int(res))
 
-    in_channels = 4 if image_size >= 32 else 3
-    out_channels = 4
+    in_channels = 4 if image_size <= 256 else 3
+    out_channels = 4 if image_size <= 256 else 6
 
     return UNetModel(
         image_size=image_size,

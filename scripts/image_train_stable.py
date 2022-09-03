@@ -45,10 +45,6 @@ def main():
     encoder.requires_grad_(False)
     set_requires_grad(encoder, False)
 
-    #encoder = torch.load(args.kl_model, map_location="cpu")
-    #encoder.to(dist_util.dev())
-    #encoder.eval()
-    #set_requires_grad(encoder, False)
 
     logger.log("loading text encoder...")
 
@@ -57,13 +53,6 @@ def main():
     clip_transformer = CLIPTextModel.from_pretrained(clip_version)
     clip_transformer.eval().requires_grad_(False).to(dist_util.dev())
 
-    #bert = BERTEmbedder(1280, 32)
-    #sd = torch.load(args.bert_model, map_location="cpu")
-    #bert.load_state_dict(sd)
-
-    #bert.to(dist_util.dev())
-    #bert.eval()
-    #set_requires_grad(bert, False)
 
     logger.log("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
@@ -102,6 +91,7 @@ def main():
         schedule_sampler=schedule_sampler,
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
+        lr_warmup_steps=args.lr_warmup_steps,
     ).run_loop()
 
 def load_latent_data(encoder, clip_tokenizer, clip_transformer, data_dir, batch_size, image_size):
@@ -148,6 +138,7 @@ def create_argparser():
         fp16_scale_growth=1e-3,
         kl_model=None,
         actual_image_size=512,
+        lr_warmup_steps=0,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
