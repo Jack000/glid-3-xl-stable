@@ -185,8 +185,18 @@ def create_model(
     for res in attention_resolutions.split(","):
         attention_ds.append(image_size // int(res))
 
-    in_channels = 4 if image_size <= 256 else 3
-    out_channels = 4 if image_size <= 256 else 6
+    if image_size < 512:
+        in_channels = 4
+        out_channels = 4
+        if image_condition:
+            in_channels = 8
+    else:
+        in_channels = 3
+        out_channels = 3
+        if learn_sigma:
+            out_channels = 6
+        if image_condition:
+            in_channels = 6
 
     return UNetModel(
         image_size=image_size,

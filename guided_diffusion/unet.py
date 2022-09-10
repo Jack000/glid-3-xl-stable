@@ -258,13 +258,14 @@ class Downsample(nn.Module):
                  downsampling occurs in the inner-two dimensions.
     """
 
-    def __init__(self, channels, use_conv, dims=2, out_channels=None,padding=1):
+    def __init__(self, channels, use_conv, dims=2, out_channels=None,padding=1,stride=None):
         super().__init__()
         self.channels = channels
         self.out_channels = out_channels or channels
         self.use_conv = use_conv
         self.dims = dims
-        stride = 2 if dims != 3 else (1, 2, 2)
+        if stride is None:
+            stride = 2 if dims != 3 else (1, 2, 2)
         if use_conv:
             self.op = conv_nd(
                 dims, self.channels, self.out_channels, 3, stride=stride, padding=padding
@@ -462,6 +463,36 @@ def count_flops_attn(model, _x, y):
     matmul_ops = 2 * b * (num_spatial ** 2) * c
     model.total_ops += th.DoubleTensor([matmul_ops])
 
+class QKVAttentionLegacy(nn.Module):
+    """
+    A module which performs QKV attention. Matches legacy QKVAttention + input/ouput heads shaping
+    """
+
+    def __init__(self, n_heads):
+        super().__init__()
+        self.n_heads = n_heads
+
+    def forward(self, qkv):
+        """
+        Apply QKV attention.
+        :param qkv: an [N x (H * 3 * C) x T] tensor of Qs, Ks, and Vs.
+        :return: an [N x (H * C) x T] tensor after attention.
+        """
+        bs, width, length = qkv.shape
+        assert width % (3 * self.n_heads) == 0
+        ch = width // (3 * self.n_heads)
+        q, k, v = qkv.reshape(bs * self.n_heads, ch * 3, length).split(ch, dim=1)
+        scale = 1 / math.sqrt(math.sqrt(ch))
+        weight = th.einsum(
+            "bct,bcs->bts", q * scale, k * scale
+        )  # More stable with f16 than dividing afterwards
+        weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
+        a = th.einsum("bts,bcs->bct", weight, v)
+        return a.reshape(bs, -1, length)
+
+    @staticmethod
+    def count_flops(model, _x, y):
+        return count_flops_attn(model, _x, y)
 
 class QKVAttention(nn.Module):
     """
@@ -566,9 +597,6 @@ class UNetModel(nn.Module):
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
 
-        if image_condition:
-            in_channels *= 2
-
         self.image_size = image_size
         self.in_channels = in_channels
         self.model_channels = model_channels
@@ -605,18 +633,20 @@ class UNetModel(nn.Module):
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
 
+        ch = input_ch = int(channel_mult[0] * model_channels)
+
         self.input_blocks = nn.ModuleList(
             [
                 TimestepEmbedSequential(
-                    conv_nd(dims, in_channels, model_channels, 3, padding=1)
+                    conv_nd(dims, in_channels, ch, 3, padding=1)
                 )
             ]
         )
 
-        self._feature_size = model_channels
+        self._feature_size = ch
 
-        input_block_chans = [model_channels]
-        ch = model_channels
+        input_block_chans = [ch]
+
         ds = 1
         for level, mult in enumerate(channel_mult):
             for _ in range(num_res_blocks):
@@ -625,13 +655,13 @@ class UNetModel(nn.Module):
                         ch,
                         time_embed_dim,
                         dropout,
-                        out_channels=mult * model_channels,
+                        out_channels=int(mult * model_channels),
                         dims=dims,
                         use_checkpoint=use_checkpoint,
                         use_scale_shift_norm=use_scale_shift_norm,
                     )
                 ]
-                ch = mult * model_channels
+                ch = int(mult * model_channels)
                 if ds in attention_resolutions:
                     if num_head_channels == -1:
                         dim_head = ch // num_heads
@@ -681,9 +711,7 @@ class UNetModel(nn.Module):
 
         if self.super_res_condition:
             self.external_block = nn.Sequential(
-                Downsample(4, True, out_channels=64),
-                Downsample(64, True, out_channels=128),
-                Downsample(256, True, out_channels=256),
+                Downsample(4, True, out_channels=256),
             )
             middle_ch = ch+256
         else:
@@ -692,7 +720,7 @@ class UNetModel(nn.Module):
         dim_head = ch // num_heads
         self.middle_block = TimestepEmbedSequential(
             ResBlock(
-                ch,
+                middle_ch,
                 time_embed_dim,
                 dropout,
                 dims=dims,
@@ -700,30 +728,25 @@ class UNetModel(nn.Module):
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
             AttentionBlock(
-                ch,
+                middle_ch,
                 use_checkpoint=use_checkpoint,
                 num_heads=num_heads,
                 num_head_channels=num_head_channels,
                 use_new_attention_order=use_new_attention_order,
             ) if not use_spatial_transformer else SpatialTransformer(
-                            ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
+                            middle_ch, num_heads, dim_head, depth=transformer_depth, context_dim=context_dim
                         ),
             ResBlock(
-                ch,
+                middle_ch,
                 time_embed_dim,
                 dropout,
                 dims=dims,
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
+                out_channels=ch
             ),
         )
         self._feature_size += ch
-
-        #if self.emb_condition_channels > 0:
-        #    self.middle_block_cond = middle_block
-        #else:
-        #    self.middle_block = middle_block
-
 
         self.output_blocks = nn.ModuleList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
@@ -734,13 +757,13 @@ class UNetModel(nn.Module):
                         ch + ich,
                         time_embed_dim,
                         dropout,
-                        out_channels=model_channels * mult,
+                        out_channels=int(model_channels * mult),
                         dims=dims,
                         use_checkpoint=use_checkpoint,
                         use_scale_shift_norm=use_scale_shift_norm,
                     )
                 ]
-                ch = model_channels * mult
+                ch = int(model_channels * mult)
                 if ds in attention_resolutions:
                     dim_head = ch // num_heads
                     layers.append(
@@ -777,13 +800,12 @@ class UNetModel(nn.Module):
         self.out = nn.Sequential(
             normalization(ch),
             nn.SiLU(),
-            zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1)),
+            zero_module(conv_nd(dims, ch, out_channels, 3, padding=1)),
         )
         if self.predict_codebook_ids:
             self.id_predictor = nn.Sequential(
             normalization(ch),
             conv_nd(dims, model_channels, n_embed, 1),
-            #nn.LogSoftmax(dim=1)  # change to cross_entropy and produce non-normalized logits
         )
 
     def convert_to_fp16(self):
@@ -799,8 +821,7 @@ class UNetModel(nn.Module):
 
         if self.super_res_condition:
             self.external_block.apply(convert_module_to_f16)
-        #    self.middle_block_cond.apply(convert_module_to_f16)
-        #else:
+
         self.middle_block.apply(convert_module_to_f16)
 
         self.output_blocks.apply(convert_module_to_f16)
@@ -818,8 +839,7 @@ class UNetModel(nn.Module):
 
         if self.super_res_condition:
             self.external_block.apply(convert_module_to_f32)
-            #self.middle_block_cond.apply(convert_module_to_f32)
-        #else:
+
         self.middle_block.apply(convert_module_to_f32)
 
         self.output_blocks.apply(convert_module_to_f32)
@@ -871,7 +891,6 @@ class UNetModel(nn.Module):
             h = module(h, emb, context)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
-            #return self.out(h), self.id_predictor(h)
             return self.id_predictor(h)
         else:
             return self.out(h)

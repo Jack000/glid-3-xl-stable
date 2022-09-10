@@ -26,20 +26,17 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
     Beta schedules may be added, but should not be removed or changed once
     they are committed to maintain backwards compatibility.
     """
-    #if schedule_name == "linear":
-        # Linear schedule from Ho et al, extended to work for any number of
-        # diffusion steps.
-    #    scale = 1000 / num_diffusion_timesteps
-    #    beta_start = scale * 0.0001
-    #    beta_end = scale * 0.02
-
-    #    return np.linspace(
-    #        beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64
-    #    )
     if schedule_name == "linear":
         linear_start = 0.00085
         linear_end = 0.012
         return np.linspace(linear_start ** 0.5, linear_end ** 0.5, num_diffusion_timesteps, dtype=np.float64) ** 2
+    elif schedule_name == 'linear_openai':
+        scale = 1000 / num_diffusion_timesteps
+        beta_start = scale * 0.0001
+        beta_end = scale * 0.02
+        return np.linspace(
+            beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64
+        )
     elif schedule_name == "cosine":
         return betas_for_alpha_bar(
             num_diffusion_timesteps,
@@ -301,9 +298,6 @@ class GaussianDiffusion:
             if denoised_fn is not None:
                 x = denoised_fn(x)
             if clip_denoised:
-                #return x.clamp(-2, 2)
-                x = x/3
-
                 s = th.quantile(
                     rearrange(x, 'b ... -> b (...)').abs(),
                     0.9,
@@ -311,9 +305,8 @@ class GaussianDiffusion:
                 )
 
                 s.clamp_(min = 1.)
-                #print(s)
                 s = s.view(-1, *((1,) * (x.ndim - 1)))
-                x = 3*x.clamp(-s, s)/s
+                x = x.clamp(-s, s)/s
             return x
 
         if self.model_mean_type == ModelMeanType.PREVIOUS_X:
@@ -581,6 +574,13 @@ class GaussianDiffusion:
         if cond_fn is not None:
             out = self.condition_score(cond_fn, out, x, t, model_kwargs=model_kwargs)
 
+        if 'avg' in model_kwargs and model_kwargs['avg']:
+            temp = out['pred_xstart'].detach().clone()
+            temp[0] = 0.5*out['pred_xstart'][0] + 0.5*out['pred_xstart'][1]
+            temp[1] = 0.5*out['pred_xstart'][0] + 0.5*out['pred_xstart'][1]
+
+            out['pred_xstart'] = temp
+
         # Usually our model outputs epsilon, but we re-derive it
         # in case we used x_start or x_prev prediction.
         eps = self._predict_eps_from_xstart(x, t, out["pred_xstart"])
@@ -598,6 +598,7 @@ class GaussianDiffusion:
             out["pred_xstart"] * th.sqrt(alpha_bar_prev)
             + th.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
         )
+
         nonzero_mask = (
             (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
         )  # no noise when t == 0
@@ -749,7 +750,11 @@ class GaussianDiffusion:
         if isinstance(model_output, tuple):
             model_output, _ = model_output
 
-        eps = model_output[:, :4]
+        if model_output.shape[1] == 6:
+            eps = model_output[:, :3]
+        else:
+            eps = model_output
+
         if cond_fn is not None:
             alpha_bar = _extract_into_tensor_lerp(self.alphas_cumprod, t, x.shape)
             eps = eps - th.sqrt(1 - alpha_bar) * cond_fn(x, t, **model_kwargs)
@@ -797,7 +802,15 @@ class GaussianDiffusion:
             if denoised_fn is not None:
                 x = denoised_fn(x)
             if clip_denoised:
-                return x.clamp(-2, 2)
+                s = th.quantile(
+                    rearrange(x, 'b ... -> b (...)').abs(),
+                    0.9,
+                    dim = -1
+                )
+
+                s.clamp_(min = 1.)
+                s = s.view(-1, *((1,) * (x.ndim - 1)))
+                x = x.clamp(-s, s)/s
             return x
 
         t_mid = t.float() - 0.5
@@ -927,7 +940,15 @@ class GaussianDiffusion:
             if denoised_fn is not None:
                 x = denoised_fn(x)
             if clip_denoised:
-                return x.clamp(-1, 1)
+                s = th.quantile(
+                    rearrange(x, 'b ... -> b (...)').abs(),
+                    0.9,
+                    dim = -1
+                )
+
+                s.clamp_(min = 1.)
+                s = s.view(-1, *((1,) * (x.ndim - 1)))
+                x = x.clamp(-s, s)/s
             return x
 
         eps = self.get_eps(model, x, t, model_kwargs, cond_fn)
@@ -936,6 +957,7 @@ class GaussianDiffusion:
         sample = self.pndm_transfer(x, eps_prime, t, t - 1)
         pred_xstart = self.eps_to_pred_xstart(x, eps, t)
         pred_xstart = process_xstart(pred_xstart)
+
         return {"sample": sample, "pred_xstart": pred_xstart, "eps": eps}
 
     def plms_sample_loop_progressive(

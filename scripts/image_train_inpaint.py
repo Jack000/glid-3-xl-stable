@@ -17,7 +17,11 @@ from guided_diffusion.train_util import TrainLoop
 import torch
 import random
 
-from encoders.modules import BERTEmbedder
+from transformers import CLIPTokenizer, CLIPTextModel
+from ldm.util import instantiate_from_config
+
+from omegaconf import OmegaConf
+from torchvision import transforms
 
 def set_requires_grad(model, value):
     for param in model.parameters():
@@ -29,35 +33,26 @@ def main():
     dist_util.setup_dist()
     logger.configure()
 
-    from clip_custom import clip # make clip end up on the right device
-
-    logger.log("loading clip...")
-    clip_model, _ = clip.load('ViT-L/14', device=dist_util.dev(), jit=False)
-    clip_model.eval().requires_grad_(False)
-    set_requires_grad(clip_model, False)
-
-    del clip_model.visual
-
     logger.log("loading vae...")
 
-    encoder = torch.load(args.kl_model, map_location="cpu")
-    encoder.half().to(dist_util.dev())
+    kl_config = OmegaConf.load('kl.yaml')
+    kl_sd = torch.load(args.kl_model, map_location="cpu")
+
+    encoder = instantiate_from_config(kl_config.model)
+    encoder.load_state_dict(kl_sd, strict=True)
+
+    encoder.to(dist_util.dev())
     encoder.eval()
+    encoder.requires_grad_(False)
     set_requires_grad(encoder, False)
 
-    del encoder.decoder
-    del encoder.loss
 
     logger.log("loading text encoder...")
 
-    
-    bert = BERTEmbedder(1280, 32)
-    sd = torch.load(args.bert_model, map_location="cpu")
-    bert.load_state_dict(sd)
-
-    bert.half().to(dist_util.dev())
-    bert.eval()
-    set_requires_grad(bert, False)
+    clip_version = 'openai/clip-vit-large-patch14'
+    clip_tokenizer = CLIPTokenizer.from_pretrained(clip_version)
+    clip_transformer = CLIPTextModel.from_pretrained(clip_version)
+    clip_transformer.eval().requires_grad_(False).to(dist_util.dev())
 
     logger.log("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion(
@@ -73,9 +68,8 @@ def main():
     logger.log("creating data loader...")
     data = load_latent_data(
         encoder,
-        bert,
-        clip_model,
-        clip,
+        clip_tokenizer,
+        clip_transformer,
         data_dir=args.data_dir,
         batch_size=args.batch_size,
         image_size=args.image_size,
@@ -99,7 +93,7 @@ def main():
         lr_anneal_steps=args.lr_anneal_steps,
     ).run_loop()
 
-def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, image_size):
+def load_latent_data(encoder, clip_tokenizer, clip_transformer, data_dir, batch_size, image_size):
     data = load_data(
         data_dir=data_dir,
         batch_size=batch_size,
@@ -107,7 +101,7 @@ def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, imag
         class_cond=False,
     )
 
-    blur = transforms.GaussianBlur(kernel_size=(15, 15), sigma=(0.1, 5))
+    blur = transforms.GaussianBlur(kernel_size=35, sigma=(0.1, 5))
 
     for batch, model_kwargs, text in data:
 
@@ -116,16 +110,15 @@ def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, imag
             if random.randint(0,100) < 20:
                 text[i] = ''
 
-        text_emb = bert.encode(text).to(dist_util.dev()).half()
+        text_encoded = clip_tokenizer(text, truncation=True, max_length=77, return_length=True, return_overflowing_tokens=False, padding="max_length", return_tensors="pt")
+        text_tokens = text_encoded["input_ids"].to(dist_util.dev())
 
-        clip_text = clip.tokenize(text, truncate=True).to(dist_util.dev())
-        clip_emb = clip_model.encode_text(clip_text)
+        text_emb = clip_transformer(input_ids=text_tokens).last_hidden_state
 
-        model_kwargs["context"] = text_emb
-        model_kwargs["clip_embed"] = clip_emb
+        model_kwargs["context"] = text_emb.half()
 
         batch = batch.to(dist_util.dev())
-        emb = encoder.encode(batch.half()).sample().half()
+        emb = encoder.encode(batch).sample().half()
         emb *= 0.18215
 
         emb_cond = emb.detach().clone()
@@ -134,8 +127,8 @@ def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, imag
             if random.randint(0,100) < 20:
                 emb_cond[i,:,:,:] = 0 # unconditional
             else:
-                if random.randint(0,100) < 50:
-                    mask = torch.randn(1, 32, 32)
+                if random.randint(0,100) < 50: # random mask
+                    mask = torch.randn(1, emb.shape[2], emb.shape[3]).to(dist_util.dev())
                     mask = blur(mask)
                     mask = (mask > 0)
                     mask = mask.repeat(4, 1, 1)
@@ -144,22 +137,23 @@ def load_latent_data(encoder, bert, clip_model, clip, data_dir, batch_size, imag
                 else:
                     # mask out 4 random rectangles
                     for j in range(random.randint(1,4)):
-                        max_area = 32*16
-                        w = random.randint(1,32)
-                        h = random.randint(1,32)
+                        max_area = emb.shape[2]*emb.shape[3]//2
+
+                        w = random.randint(1,emb.shape[3])
+                        h = random.randint(1,emb.shape[2])
                         if w*h > max_area:
                             if random.randint(0,100) < 50:
                                 w = max_area//h
                             else:
                                 h = max_area//w
-                        if w == 32:
+                        if w == emb.shape[3]:
                             offsetx = 0
                         else:
-                            offsetx = random.randint(0, 32-w)
-                        if h == 32:
+                            offsetx = random.randint(0, emb.shape[3]-w)
+                        if h == emb.shape[2]:
                             offsety = 0
                         else:
-                            offsety = random.randint(0, 32-h)
+                            offsety = random.randint(0, emb.shape[2]-h)
                         emb_cond[i,:, offsety:offsety+h, offsetx:offsetx+w] = 0
 
         model_kwargs["image_embed"] = emb_cond
@@ -182,11 +176,11 @@ def create_argparser():
         use_fp16=False,
         fp16_scale_growth=1e-3,
         kl_model=None,
-        bert_model=None,
+        actual_image_size=512,
+        lr_warmup_steps=0,
     )
     defaults.update(model_and_diffusion_defaults())
 
-    defaults['clip_embed_dim'] = 768
     defaults['image_condition'] = True
 
     parser = argparse.ArgumentParser()
