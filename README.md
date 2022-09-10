@@ -1,6 +1,8 @@
 # GLID-3-XL-stable
 
-GLID-3-xl-stable is [stable diffusion](https://github.com/CompVis/stable-diffusion) back-ported to the OpenAI guided diffusion codebase.
+GLID-3-xl-stable is [stable diffusion](https://github.com/CompVis/stable-diffusion) back-ported to the OpenAI guided diffusion codebase, for easier development and training. It also has additional features for conditional generation and super resolution.
+
+[upscale examples](https://github.com/Jack000/glid-3-xl-stable/wiki/Double-diffusion-for-more-detailed-upscaling)
 
 # Install
 
@@ -41,15 +43,13 @@ python sample.py --init_image picture.jpg --skip_timesteps 20 --model_path diffu
 ```
 
 # Upscaling
-note: best results at 512x512 input and 1024x1024 output (default settings)
+note: best results at 512x512 input and 1024x1024 output (default settings) 11gb vram required
 ```
 # download model
 wget -O upscale.pt https://huggingface.co/Jack000/glid-3-xl-stable/resolve/main/super_lg/ema_0.999_040000.pt
 
 python super_large.py --image img.png --skip_timesteps 1
 
-# clip guidance (48gb vram required)
-python super_large.py --image img.png --text "your prompt here" --skip_timesteps 1 --steps 100
 ```
 
 # Training/Fine tuning

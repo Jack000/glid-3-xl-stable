@@ -43,10 +43,10 @@ parser.add_argument('--image', type = str, required = True, default = '',
 parser.add_argument('--text', type = str, required = False, default = '',
                     help='your text prompt (not necessary). If provided, use clip guidance')
 
-parser.add_argument('--cutn', type = int, default = 16, required = False,
+parser.add_argument('--cutn', type = int, default = 32, required = False,
                     help='Number of cuts for clip guidance')
 
-parser.add_argument('--clip_guidance_scale', type = int, default = 10000, required = False,
+parser.add_argument('--clip_guidance_scale', type = int, default = 5000, required = False,
                     help='Amount of clip guidance')
 
 parser.add_argument('--tv_scale', type = int, default = 0, required = False,
