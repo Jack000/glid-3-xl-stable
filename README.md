@@ -27,6 +27,10 @@ python split.py sd-v1-3.ckpt
 
 # you should now have diffusion.pt and kl.pt
 
+# alternatively
+wget -O diffusion.pt https://huggingface.co/Jack000/glid-3-xl-stable/resolve/main/default/diffusion-1.4.pt
+wget -O kl.pt https://huggingface.co/Jack000/glid-3-xl-stable/resolve/main/default/kl-1.4.pt
+
 ```
 
 # Generating images
