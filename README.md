@@ -44,7 +44,7 @@ python sample.py --init_image picture.jpg --skip_timesteps 20 --model_path diffu
 note: best results at 512x512 input and 1024x1024 output (default settings)
 ```
 # download model
-wget -O upscale.pt https://huggingface.co/Jack000/glid-3-xl-stable/blob/main/super_lg/ema_0.999_040000.pt
+wget -O upscale.pt https://huggingface.co/Jack000/glid-3-xl-stable/resolve/main/super_lg/ema_0.999_040000.pt
 
 python super_large.py --image img.png --skip_timesteps 1
 
