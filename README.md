@@ -2,8 +2,6 @@
 
 GLID-3-xl-stable is [stable diffusion](https://github.com/CompVis/stable-diffusion) back-ported to the OpenAI guided diffusion codebase.
 
-note: code runs but have not tested extensively
-
 # Install
 
 First install [latent diffusion](https://github.com/CompVis/latent-diffusion)
