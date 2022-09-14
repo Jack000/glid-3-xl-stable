@@ -73,6 +73,7 @@ def main():
         data_dir=args.data_dir,
         batch_size=args.batch_size,
         image_size=args.image_size,
+        use_fp16=args.use_fp16,
     )
     logger.log("training...")
     TrainLoop(
@@ -93,7 +94,7 @@ def main():
         lr_anneal_steps=args.lr_anneal_steps,
     ).run_loop()
 
-def load_latent_data(encoder, clip_tokenizer, clip_transformer, data_dir, batch_size, image_size):
+def load_latent_data(encoder, clip_tokenizer, clip_transformer, data_dir, batch_size, image_size, use_fp16):
     data = load_data(
         data_dir=data_dir,
         batch_size=batch_size,
@@ -115,11 +116,17 @@ def load_latent_data(encoder, clip_tokenizer, clip_transformer, data_dir, batch_
 
         text_emb = clip_transformer(input_ids=text_tokens).last_hidden_state
 
-        model_kwargs["context"] = text_emb.half()
+        if use_fp16:
+            text_emb = text_emb.half()
+
+        model_kwargs["context"] = text_emb
 
         batch = batch.to(dist_util.dev())
-        emb = encoder.encode(batch).sample().half()
+        emb = encoder.encode(batch).sample()
         emb *= 0.18215
+
+        if use_fp16:
+            emb = emb.half()
 
         emb_cond = emb.detach().clone()
 

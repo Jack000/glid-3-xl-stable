@@ -14,7 +14,7 @@ from tqdm.notebook import tqdm
 
 import numpy as np
 
-from guided_diffusion.script_util import create_model_and_diffusion, model_and_diffusion_defaults
+from guided_diffusion.script_util import create_model_and_diffusion, model_and_diffusion_defaults, classifier_defaults, create_classifier
 
 from omegaconf import OmegaConf
 from ldm.util import instantiate_from_config
@@ -41,6 +41,12 @@ parser.add_argument('--kl_path', type=str, default = 'kl.pt',
 
 parser.add_argument('--text', type = str, required = False, default = '',
                     help='your text prompt')
+
+parser.add_argument('--classifier', type=str, default = '',
+                   help='path to the classifier model')
+
+parser.add_argument('--classifier_scale', type = int, required = False, default = 100,
+                    help='amount of classifier guidance')
 
 parser.add_argument('--edit', type = str, required = False,
                     help='path to the image you want to edit (either an image file or .npy containing a numpy array of the image embeddings)')
@@ -232,6 +238,20 @@ def set_requires_grad(model, value):
     for param in model.parameters():
         param.requires_grad = value
 
+# load classifier
+if args.classifier:
+    classifier_config = classifier_defaults()
+    classifier_config['classifier_width'] = 128
+    classifier_config['classifier_depth'] = 4
+    classifier_config['classifier_attention_resolutions'] = '64,32,16,8'
+    classifier = create_classifier(**classifier_config)
+    classifier.load_state_dict(
+        torch.load(args.classifier, map_location="cpu")
+    )
+    classifier.to(device)
+    classifier.convert_to_fp16()
+    classifier.eval()
+
 # vae
 kl_config = OmegaConf.load('kl.yaml')
 kl_sd = torch.load(args.kl_path, map_location="cpu")
@@ -363,6 +383,17 @@ def do_run():
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
 
+    cond_fn = None
+
+    if args.classifier:
+        def cond_fn(x, t, context=None, clip_embed=None, image_embed=None):
+            with torch.enable_grad():
+                x_in = x[:x.shape[0]//2].detach().requires_grad_(True)
+                logits = classifier(x_in, t)
+                log_probs = F.log_softmax(logits, dim=-1)
+                selected = log_probs[range(len(logits)), torch.ones(x_in.shape[0], dtype=torch.long)]
+                return torch.autograd.grad(selected.sum(), x_in)[0] * args.classifier_scale
+
     cur_t = None
  
     if args.ddpm:
@@ -404,7 +435,7 @@ def do_run():
             (args.batch_size*2, 4, int(args.height/8), int(args.width/8)),
             clip_denoised=False,
             model_kwargs=kwargs,
-            cond_fn=None,
+            cond_fn=cond_fn,
             device=device,
             progress=True,
             init_image=init,

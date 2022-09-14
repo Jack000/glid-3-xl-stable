@@ -3,7 +3,7 @@ import inspect
 
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
-from .unet import UNetModel
+from .unet import UNetModel, EncoderUNetModel
 
 NUM_CLASSES = 2
 
@@ -30,7 +30,7 @@ def classifier_defaults():
     """
     return dict(
         image_size=64,
-        classifier_use_fp16=False,
+        classifier_use_fp16=True,
         classifier_width=128,
         classifier_depth=2,
         classifier_attention_resolutions="32,16,8",  # 16
@@ -289,9 +289,14 @@ def create_classifier(
     for res in classifier_attention_resolutions.split(","):
         attention_ds.append(image_size // int(res))
 
+    if image_size < 512:
+        in_channels = 4
+    else:
+        in_channels = 3
+
     return EncoderUNetModel(
         image_size=image_size,
-        in_channels=3,
+        in_channels=in_channels,
         model_channels=classifier_width,
         out_channels=1000,
         num_res_blocks=classifier_depth,
