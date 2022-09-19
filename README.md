@@ -46,6 +46,24 @@ python sample.py --init_image picture.jpg --skip_timesteps 20 --model_path diffu
 # generated image embeddings saved to ./output_npy/ as npy files
 ```
 
+# Generate with classifier guidance
+note: best results with --ddim --steps 100
+
+```
+# download photo classifier
+wget -O class-photo.pt https://huggingface.co/Jack000/glid-3-xl-stable/resolve/main/classifier_photo/model060000.pt
+
+# download art classifier
+wget -O class-art.pt https://huggingface.co/Jack000/glid-3-xl-stable/resolve/main/classifier_art/model110000.pt
+
+# download anime classifier
+wget -O class-anime.pt https://huggingface.co/Jack000/glid-3-xl-stable/resolve/main/classifier_anime/model070000.pt
+
+# generate
+python sample.py --ddim --steps 100 --classifier_scale 100 --classifier class-anime.pt --model_path diffusion.pt --text "anime Elon Musk"
+
+```
+
 # Upscaling
 note: best results at 512x512 input and 1024x1024 output (default settings) 11gb vram required
 ```
@@ -64,7 +82,7 @@ Train with same flags as guided diffusion. Data directory should contain image a
 # batch sizes are per-gpu, not total
 
 MODEL_FLAGS="--actual_image_size 512 --lr_warmup_steps 10000 --ema_rate 0.9999 --attention_resolutions 64,32,16 --class_cond False --diffusion_steps 1000 --image_size 64 --learn_sigma False --noise_schedule linear --num_channels 320 --num_heads 8 --num_res_blocks 2 --resblock_updown False --use_fp16 True --use_scale_shift_norm False "
-TRAIN_FLAGS="--lr 1e-5 --batch_size 8 --log_interval 10 --save_interval 5000 --kl_model kl.pt --resume_checkpoint diffusion.pt"
+TRAIN_FLAGS="--lr 5e-5 --batch_size 32 --log_interval 10 --save_interval 5000 --kl_model kl.pt --resume_checkpoint diffusion.pt"
 export OPENAI_LOGDIR=./logs/
 python scripts/image_train_stable.py --data_dir /path/to/image-and-text-files $MODEL_FLAGS $TRAIN_FLAGS
 
