@@ -10,6 +10,8 @@ from torch import nn
 from torch.nn import functional as F
 from torchvision import transforms
 from torchvision.transforms import functional as TF
+from torchvision.ops import masks_to_boxes
+
 from tqdm.notebook import tqdm
 
 import numpy as np
@@ -444,19 +446,35 @@ def do_run():
 
             mask = input_image_mask.detach().clone()
 
-            x_num = math.ceil((output.shape[3]-overlap)/(64-overlap))
-            y_num = math.ceil((output.shape[2]-overlap)/(64-overlap))
+            box = masks_to_boxes(~mask.squeeze(0))[0]
+
+            x0 = int(box[0])
+            y0 = int(box[1])
+            x1 = int(box[2] + 1)
+            y1 = int(box[3] + 1)
+
+            x_num = math.ceil(((x1-x0)-overlap)/(64-overlap))
+            y_num = math.ceil(((y1-y0)-overlap)/(64-overlap))
+
+            if x_num < 1:
+                x_num = 1
+            if y_num < 1:
+                y_num = 1
 
             for y in range(y_num):
                 for x in range(x_num):
-                    offsetx = x*(64-overlap)
-                    offsety = y*(64-overlap)
+                    offsetx = x0 + x*(64-overlap)
+                    offsety = y0 + y*(64-overlap)
 
-                    if offsetx + 64 > output.shape[3]:
-                        offsetx = output.shape[3] - 64
+                    if offsetx + 64 > x1:
+                        offsetx = x1 - 64
+                    if offsetx < 0:
+                        offsetx = 0
 
-                    if offsety + 64 > output.shape[2]:
-                        offsety = output.shape[2] - 64
+                    if offsety + 64 > y1:
+                        offsety = y1 - 64
+                    if offsety < 0:
+                        offsety = 0
 
                     patch_input = output[:,:, offsety:offsety+64, offsetx:offsetx+64]
                     patch_mask = mask[:,:, offsety:offsety+64, offsetx:offsetx+64]
