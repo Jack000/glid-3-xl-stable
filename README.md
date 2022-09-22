@@ -1,8 +1,11 @@
 # GLID-3-XL-stable
 
-GLID-3-xl-stable is [stable diffusion](https://github.com/CompVis/stable-diffusion) back-ported to the OpenAI guided diffusion codebase, for easier development and training. It also has additional features for conditional generation and super resolution.
+GLID-3-xl-stable is [stable diffusion](https://github.com/CompVis/stable-diffusion) back-ported to the OpenAI guided diffusion codebase, for easier development and training.
 
-[upscale examples](https://github.com/Jack000/glid-3-xl-stable/wiki/Double-diffusion-for-more-detailed-upscaling)
+features:
+
+[classifier guided stable diffusion](https://github.com/Jack000/glid-3-xl-stable/wiki/Classifier-guided-stable-diffusion)
+[super-resolution](https://github.com/Jack000/glid-3-xl-stable/wiki/Double-diffusion-for-more-detailed-upscaling)
 
 # Install
 
@@ -23,7 +26,7 @@ pip install mpi4py
 
 ```
 # split checkpoint
-python split.py sd-v1-3.ckpt
+python split.py sd-v1-4.ckpt
 
 # you should now have diffusion.pt and kl.pt
 
@@ -44,6 +47,27 @@ python sample.py --init_image picture.jpg --skip_timesteps 20 --model_path diffu
 
 # generated images saved to ./output/
 # generated image embeddings saved to ./output_npy/ as npy files
+```
+
+# Inpainting
+A custom inpainting/outpainting model trained for an additional 100k steps
+
+```
+# install PyQt5 if you want to use a gui, otherwise supply a mask file
+pip install PyQt5
+
+# inpaint with gui
+python sample.py --model_path inpaint.pt --edit your-image.png --text "your prompt here"
+
+# the previously painted mask is saved as mask.png
+python sample.py --model_path inpaint.pt --edit your-image.png --text "your prompt here" --mask mask.png
+
+# partial inpaint by skipping timesteps
+python sample.py --model_path inpaint.pt --edit your-image.png --text "your prompt here" --skip_timesteps 20
+
+# outpaint extends the canvas
+# --outpaint options: expand, wider, taller, left, top, right, bottom
+python sample.py --model_path inpaint.pt --edit your-image.png --text "your prompt here" --outpaint wider
 ```
 
 # Generate with classifier guidance
@@ -93,11 +117,21 @@ mpiexec -n N python scripts/image_train_stable.py --data_dir /path/to/image-and-
 ```
 # merge checkpoint back into single .pt (for compatibility with other stable diffusion tools)
 
-python merge.py sd-v1-3.ckpt ./logs/finetuned-ema-checkpoint.pt
+python merge.py sd-v1-4.ckpt ./logs/finetuned-ema-checkpoint.pt
 
 ```
 
-# Training classifier
+# Train inpainting
+
+```
+# example configs for 8x80GB A100
+MODEL_FLAGS="--actual_image_size 512 --lr_warmup_steps 10000 --ema_rate 0.9999 --attention_resolutions 64,32,16 --class_cond False --diffusion_steps 1000 --image_size 64 --learn_sigma False --noise_schedule linear --num_channels 320 --num_heads 8 --num_res_blocks 2 --resblock_updown False --use_fp16 True --use_scale_shift_norm False "
+TRAIN_FLAGS="--lr 5e-5 --batch_size 32 --log_interval 10 --save_interval 10000 --kl_model kl.pt --resume_checkpoint inpaint.pt"
+export OPENAI_LOGDIR=./logs_inpaint/
+mpiexec -n 8 python scripts/image_train_stable_inpaint.py --data_dir /path/to/text/and/images $MODEL_FLAGS $TRAIN_FLAGS
+```
+
+# Train classifier
 
 ```
 # example configs for 4x3090
@@ -108,7 +142,7 @@ export OPENAI_LOGDIR=./logs_classifier/
 mpiexec -n 4 python scripts/classifier_train_stable.py --good_data_dir /your-images/ --bad_data_dir /laion-images/ $MODEL_FLAGS $TRAIN_FLAGS
 ```
 
-# Training large upscale model
+# Train large upscale model
 
 ```
 # minimum 80gb vram to train

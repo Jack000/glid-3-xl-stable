@@ -3,7 +3,7 @@ import io
 import math
 import sys
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw
 import requests
 import torch
 from torch import nn
@@ -51,17 +51,8 @@ parser.add_argument('--classifier_scale', type = int, required = False, default 
 parser.add_argument('--edit', type = str, required = False,
                     help='path to the image you want to edit (either an image file or .npy containing a numpy array of the image embeddings)')
 
-parser.add_argument('--edit_x', type = int, required = False, default = 0,
-                    help='x position of the edit image in the generation frame (need to be multiple of 8)')
-
-parser.add_argument('--edit_y', type = int, required = False, default = 0,
-                    help='y position of the edit image in the generation frame (need to be multiple of 8)')
-
-parser.add_argument('--edit_width', type = int, required = False, default = 0,
-                    help='width of the edit image in the generation frame (need to be multiple of 8)')
-
-parser.add_argument('--edit_height', type = int, required = False, default = 0,
-                    help='height of the edit image in the generation frame (need to be multiple of 8)')
+parser.add_argument('--outpaint', type = str, required = False, default = '',
+                    help='options: expand (all directions), wider, taller, left, right, top, bottom')
 
 parser.add_argument('--mask', type = str, required = False,
                     help='path to a mask image. white pixels = keep, black pixels = discard. width = image width/8, height = image height/8')
@@ -101,11 +92,9 @@ parser.add_argument('--steps', type = int, default = 0, required = False,
 
 parser.add_argument('--cpu', dest='cpu', action='store_true')
 
-parser.add_argument('--clip_score', dest='clip_score', action='store_true')
+parser.add_argument('--ddim', dest='ddim', action='store_true')
 
-parser.add_argument('--ddim', dest='ddim', action='store_true') # turn on to use 50 step ddim
-
-parser.add_argument('--ddpm', dest='ddpm', action='store_true') # turn on to use 50 step ddim
+parser.add_argument('--ddpm', dest='ddpm', action='store_true')
 
 args = parser.parse_args()
 
@@ -191,8 +180,7 @@ model_params = {
     'class_cond': False,
     'diffusion_steps': 1000,
     'rescale_timesteps': True,
-    'timestep_respacing': '50',  # Modify this value to decrease the number of
-                                 # timesteps.
+    'timestep_respacing': '50',
     'image_size': 32,
     'learn_sigma': False,
     'noise_schedule': 'linear',
@@ -202,9 +190,8 @@ model_params = {
     'resblock_updown': False,
     'use_fp16': False,
     'use_scale_shift_norm': False,
-    'clip_embed_dim': 768 if 'clip_proj.weight' in model_state_dict else None,
-    'image_condition': False,
-    #'image_condition': True if model_state_dict['input_blocks.0.0.weight'].shape[1] == 8 else False,
+    'clip_embed_dim': None,
+    'image_condition': True if model_state_dict['input_blocks.0.0.weight'].shape[1] == 8 else False,
     'super_res_condition': True if 'external_block.0.0.weight' in model_state_dict else False,
 }
 
@@ -292,58 +279,73 @@ def do_run():
             with open(args.edit, 'rb') as f:
                 im = np.load(f)
                 im = torch.from_numpy(im).unsqueeze(0).to(device)
-
-                input_image = torch.zeros(1, 4, args.height//8, args.width//8, device=device)
-
-                y = args.edit_y//8
-                x = args.edit_x//8
-
-                ycrop = y + im.shape[2] - input_image.shape[2]
-                xcrop = x + im.shape[3] - input_image.shape[3]
-
-                ycrop = ycrop if ycrop > 0 else 0
-                xcrop = xcrop if xcrop > 0 else 0
-
-                input_image[0,:,y if y >=0 else 0:y+im.shape[2],x if x >=0 else 0:x+im.shape[3]] = im[:,:,0 if y > 0 else -y:im.shape[2]-ycrop,0 if x > 0 else -x:im.shape[3]-xcrop]
-
-                input_image_pil = ldm.decode(input_image)
-                input_image_pil = TF.to_pil_image(input_image_pil.squeeze(0).add(1).div(2).clamp(0, 1))
-
-                input_image *= 0.18215
         else:
-            w = args.edit_width if args.edit_width else args.width
-            h = args.edit_height if args.edit_height else args.height
-
             input_image_pil = Image.open(fetch(args.edit)).convert('RGB')
-            input_image_pil = ImageOps.fit(input_image_pil, (w, h))
-
-            input_image = torch.zeros(1, 4, args.height//8, args.width//8, device=device)
 
             im = transforms.ToTensor()(input_image_pil).unsqueeze(0).to(device)
             im = 2*im-1
             im = ldm.encode(im).sample()
 
-            y = args.edit_y//8
-            x = args.edit_x//8
+        if im.shape[3] < 64:
+            im2 = torch.zeros(1,4,im.shape[2],64)
+            x = (64-im.shape[3])//2
+            im2[:,:,:,x:x+im.shape[3]] = im
+            im = im2
 
-            input_image = torch.zeros(1, 4, args.height//8, args.width//8, device=device)
+        if im.shape[2] < 64:
+            im2 = torch.zeros(1,4,64,im.shape[3])
+            y = (64-im.shape[2])//2
+            im2[:,:,y:y+im.shape[2],:] = im
+            im = im2
 
-            ycrop = y + im.shape[2] - input_image.shape[2]
-            xcrop = x + im.shape[3] - input_image.shape[3]
 
-            ycrop = ycrop if ycrop > 0 else 0
-            xcrop = xcrop if xcrop > 0 else 0
+        if args.outpaint == 'expand':
+            input_image = torch.zeros(1, 4, im.shape[2]+64, im.shape[3]+64, device=device)
+            input_image[:,:,32:32+im.shape[2],32:32+im.shape[3]] = im
+            input_image_mask = torch.zeros(1, 1, im.shape[2]+64, im.shape[3]+64, device=device, dtype=torch.bool)
+            input_image_mask[:,:,32:32+im.shape[2],32:32+im.shape[3]] = True
+        elif args.outpaint == 'wider':
+            input_image = torch.zeros(1, 4, im.shape[2], im.shape[3]+64, device=device)
+            input_image[:,:,:,32:32+im.shape[3]] = im
+            input_image_mask = torch.zeros(1, 1, im.shape[2], im.shape[3]+64, device=device, dtype=torch.bool)
+            input_image_mask[:,:,:,32:32+im.shape[3]] = True
+        elif args.outpaint == 'taller':
+            input_image = torch.zeros(1, 4, im.shape[2]+64, im.shape[3], device=device)
+            input_image[:,:,32:32+im.shape[2],:] = im
+            input_image_mask = torch.zeros(1, 1, im.shape[2]+64, im.shape[3], device=device, dtype=torch.bool)
+            input_image_mask[:,:,32:32+im.shape[2],:] = True
+        elif args.outpaint == 'left':
+            input_image = torch.zeros(1, 4, im.shape[2], im.shape[3]+32, device=device)
+            input_image[:,:,:,32:32+im.shape[3]] = im
+            input_image_mask = torch.zeros(1, 1, im.shape[2], im.shape[3]+32, device=device, dtype=torch.bool)
+            input_image_mask[:,:,:,32:32+im.shape[3]] = True
+        elif args.outpaint == 'right':
+            input_image = torch.zeros(1, 4, im.shape[2], im.shape[3]+32, device=device)
+            input_image[:,:,:,0:im.shape[3]] = im
+            input_image_mask = torch.zeros(1, 1, im.shape[2], im.shape[3]+32, device=device, dtype=torch.bool)
+            input_image_mask[:,:,:,0:im.shape[3]] = True
+        elif args.outpaint == 'top':
+            input_image = torch.zeros(1, 4, im.shape[2]+32, im.shape[3], device=device)
+            input_image[:,:,32:32+im.shape[2],:] = im
+            input_image_mask = torch.zeros(1, 1, im.shape[2]+32, im.shape[3], device=device, dtype=torch.bool)
+            input_image_mask[:,:,32:32+im.shape[2],:] = True
+        elif args.outpaint == 'bottom':
+            input_image = torch.zeros(1, 4, im.shape[2]+32, im.shape[3], device=device)
+            input_image[:,:,0:im.shape[2],:] = im
+            input_image_mask = torch.zeros(1, 1, im.shape[2]+32, im.shape[3], device=device, dtype=torch.bool)
+            input_image_mask[:,:,0:im.shape[2],:] = True
+        else:
+            input_image = im
+            input_image_mask = torch.ones(1,1,im.shape[2], im.shape[3], device=device, dtype=torch.bool)
 
-            input_image[0,:,y if y >=0 else 0:y+im.shape[2],x if x >=0 else 0:x+im.shape[3]] = im[:,:,0 if y > 0 else -y:im.shape[2]-ycrop,0 if x > 0 else -x:im.shape[3]-xcrop]
+        input_image_pil = ldm.decode(input_image)
+        input_image_pil = TF.to_pil_image(input_image_pil.squeeze(0).add(1).div(2).clamp(0, 1))
 
-            input_image_pil = ldm.decode(input_image)
-            input_image_pil = TF.to_pil_image(input_image_pil.squeeze(0).add(1).div(2).clamp(0, 1))
-
-            input_image *= 0.18215
+        input_image *= 0.18215
 
         if args.mask:
             mask_image = Image.open(fetch(args.mask)).convert('L')
-            mask_image = mask_image.resize((args.width//8,args.height//8), Image.ANTIALIAS)
+            mask_image = mask_image.resize((input_image.shape[3],input_image.shape[2]), Image.ANTIALIAS)
             mask = transforms.ToTensor()(mask_image).unsqueeze(0).to(device)
         else:
             print('draw the area for inpainting, then close the window')
@@ -352,13 +354,15 @@ def do_run():
             app.exec_()
             mask_image = d.getCanvas().convert('L').point( lambda p: 255 if p < 1 else 0 )
             mask_image.save('mask.png')
-            mask_image = mask_image.resize((args.width//8,args.height//8), Image.ANTIALIAS)
+            mask_image = mask_image.resize((input_image.shape[3],input_image.shape[2]), Image.ANTIALIAS)
             mask = transforms.ToTensor()(mask_image).unsqueeze(0).to(device)
 
         mask1 = (mask > 0.5)
-        mask1 = mask1.float()
+        input_image_mask *= mask1
 
-        input_image *= mask1
+        #mask1 = mask1.float()
+        #input_image *= mask1
+
 
         image_embed = torch.cat(args.batch_size*2*[input_image], dim=0).float()
 
@@ -403,17 +407,21 @@ def do_run():
     else:
         sample_fn = diffusion.plms_sample_loop_progressive
 
-    def save_sample(i, sample, clip_score=False):
-        for k, image in enumerate(sample['pred_xstart'][:args.batch_size]):
-            image /= 0.18215
-            im = image.unsqueeze(0)
+    def save_sample(i, samples, square=None):
+        for k, image in enumerate(samples):
+            image_scaled = image/0.18215
+            im = image_scaled.unsqueeze(0)
             out = ldm.decode(im)
 
             npy_filename = f'output_npy/{args.prefix}{i * args.batch_size + k:05}.npy'
             with open(npy_filename, 'wb') as outfile:
-                np.save(outfile, image.detach().cpu().numpy())
+                np.save(outfile, image_scaled.detach().cpu().numpy())
 
             out = TF.to_pil_image(out.squeeze(0).add(1).div(2).clamp(0, 1))
+            
+            if square is not None:
+                outdraw = ImageDraw.Draw(out)  
+                outdraw.rectangle([(square[0]*8, square[1]*8),(square[0]*8+512, square[1]*8+512)], fill=None, outline ="red")
 
             filename = f'output/{args.prefix}{i * args.batch_size + k:05}.png'
             out.save(filename)
@@ -427,27 +435,102 @@ def do_run():
     else:
         init = None
 
-    for i in range(args.num_batches):
-        cur_t = diffusion.num_timesteps - 1
+    overlap = 32
 
-        samples = sample_fn(
-            model_fn,
-            (args.batch_size*2, 4, int(args.height/8), int(args.width/8)),
-            clip_denoised=False,
-            model_kwargs=kwargs,
-            cond_fn=cond_fn,
-            device=device,
-            progress=True,
-            init_image=init,
-            skip_timesteps=args.skip_timesteps,
-        )
+    if args.edit:
+        for i in range(args.num_batches):
+            output = input_image.detach().clone()
+            output *= input_image_mask.repeat(1, 4, 1, 1).float()
 
-        for j, sample in enumerate(samples):
-            cur_t -= 1
-            if j % 5 == 0 and j != diffusion.num_timesteps - 1:
-                save_sample(i, sample)
+            mask = input_image_mask.detach().clone()
 
-        save_sample(i, sample, args.clip_score)
+            x_num = math.ceil((output.shape[3]-overlap)/(64-overlap))
+            y_num = math.ceil((output.shape[2]-overlap)/(64-overlap))
+
+            for y in range(y_num):
+                for x in range(x_num):
+                    offsetx = x*(64-overlap)
+                    offsety = y*(64-overlap)
+
+                    if offsetx + 64 > output.shape[3]:
+                        offsetx = output.shape[3] - 64
+
+                    if offsety + 64 > output.shape[2]:
+                        offsety = output.shape[2] - 64
+
+                    patch_input = output[:,:, offsety:offsety+64, offsetx:offsetx+64]
+                    patch_mask = mask[:,:, offsety:offsety+64, offsetx:offsetx+64]
+
+                    if not torch.any(~patch_mask):
+                        # region does not require any inpainting
+                        output[:,:, offsety:offsety+64, offsetx:offsetx+64] = patch_input
+                        continue
+
+                    mask[:,:, offsety:offsety+64, offsetx:offsetx+64] = True
+
+                    patch_init = None
+
+                    if args.skip_timesteps > 0:
+                        patch_init = input_image[:,:, offsety:offsety+64, offsetx:offsetx+64]
+                        patch_init = torch.cat([patch_init, patch_init], dim=0)
+
+                    skip_timesteps = args.skip_timesteps
+
+                    if not torch.any(patch_mask):
+                        # region has no input image, cannot use init
+                        patch_init = None
+                        skip_timesteps = 0
+
+                    patch_kwargs = {
+                        "context": kwargs["context"],
+                        "clip_embed": None,
+                        "image_embed": torch.cat([patch_input, patch_input], dim=0)
+                    }
+
+                    cur_t = diffusion.num_timesteps - 1
+
+                    samples = sample_fn(
+                        model_fn,
+                        (2, 4, 64, 64),
+                        clip_denoised=False,
+                        model_kwargs=patch_kwargs,
+                        cond_fn=cond_fn,
+                        device=device,
+                        progress=True,
+                        init_image=patch_init,
+                        skip_timesteps=skip_timesteps,
+                    )
+
+                    for j, sample in enumerate(samples):
+                        cur_t -= 1
+                        output[0,:, offsety:offsety+64, offsetx:offsetx+64] = sample['pred_xstart'][0]
+                        if j % 25 == 0:
+                            save_sample(i, output, square=(offsetx, offsety))
+
+                    save_sample(i, output)
+
+    else:
+        for i in range(args.num_batches):
+            cur_t = diffusion.num_timesteps - 1
+
+            samples = sample_fn(
+                model_fn,
+                (args.batch_size*2, 4, int(args.height/8), int(args.width/8)),
+                clip_denoised=False,
+                model_kwargs=kwargs,
+                cond_fn=cond_fn,
+                device=device,
+                progress=True,
+                init_image=init,
+                skip_timesteps=args.skip_timesteps,
+            )
+
+            for j, sample in enumerate(samples):
+                cur_t -= 1
+                #if j % 50 == 0 and j != diffusion.num_timesteps - 1:
+                #    save_sample(i, sample['pred_xstart'][:args.batch_size])
+
+            save_sample(i, sample['pred_xstart'][:args.batch_size])
 
 gc.collect()
 do_run()
