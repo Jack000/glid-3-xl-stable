@@ -4,6 +4,8 @@ GLID-3-xl-stable is [stable diffusion](https://github.com/CompVis/stable-diffusi
 
 features:
 
+[inpainting/outpainting](https://github.com/Jack000/glid-3-xl-stable/wiki/Custom-inpainting-model)
+
 [classifier guided stable diffusion](https://github.com/Jack000/glid-3-xl-stable/wiki/Classifier-guided-stable-diffusion)
 
 [super-resolution](https://github.com/Jack000/glid-3-xl-stable/wiki/Double-diffusion-for-more-detailed-upscaling)
