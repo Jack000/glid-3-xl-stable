@@ -57,6 +57,9 @@ A custom inpainting/outpainting model trained for an additional 100k steps
 # install PyQt5 if you want to use a gui, otherwise supply a mask file
 pip install PyQt5
 
+# download inpaint model
+wget -O inpaint.pt https://huggingface.co/Jack000/glid-3-xl-stable/resolve/main/inpaint/ema_0.9999_100000.pt
+
 # inpaint with gui
 python sample.py --model_path inpaint.pt --edit your-image.png --text "your prompt here"
 

@@ -545,8 +545,8 @@ def do_run():
 
             for j, sample in enumerate(samples):
                 cur_t -= 1
-                #if j % 50 == 0 and j != diffusion.num_timesteps - 1:
-                #    save_sample(i, sample['pred_xstart'][:args.batch_size])
+                if j % 20 == 0:
+                    save_sample(i, sample['pred_xstart'][:args.batch_size])
 
             save_sample(i, sample['pred_xstart'][:args.batch_size])
 
