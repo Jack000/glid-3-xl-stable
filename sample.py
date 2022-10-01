@@ -213,6 +213,10 @@ model_config.update(model_params)
 if args.cpu:
     model_config['use_fp16'] = False
 
+# Create output folders
+os.makedirs("output", exist_ok = True)
+os.makedirs("output_npy", exist_ok = True)
+    
 # Load models
 model, diffusion = create_model_and_diffusion(**model_config)
 model.load_state_dict(model_state_dict, strict=True)
