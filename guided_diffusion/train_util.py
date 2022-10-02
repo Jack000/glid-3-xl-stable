@@ -125,13 +125,22 @@ class TrainLoop:
                     for k in state_dict:
                         if k in model_state_dict:
                             if state_dict[k].shape != model_state_dict[k].shape:
-                                logger.info(f"Skip loading parameter: {k}, "
-                                            f"required shape: {model_state_dict[k].shape}, "
-                                            f"loaded shape: {state_dict[k].shape}")
-                                state_dict[k] = model_state_dict[k]
-                                if k.endswith('weight'):
-                                    kb = k.replace('weight','bias')
-                                    state_dict[kb] = model_state_dict[kb]
+                                if k == 'input_blocks.0.0.weight':
+                                    logger.info(f"Force load parameter: {k}, "
+                                                f"required shape: {model_state_dict[k].shape}, "
+                                                f"loaded shape: {state_dict[k].shape}")
+                                    temp = th.rand(320,8,3,3)
+                                    temp[:,:4,:,:] = state_dict[k]
+                                    state_dict[k] = temp
+
+                                else:
+                                    logger.info(f"Skip loading parameter: {k}, "
+                                                f"required shape: {model_state_dict[k].shape}, "
+                                                f"loaded shape: {state_dict[k].shape}")
+                                    state_dict[k] = model_state_dict[k]
+                                    if k.endswith('weight'):
+                                        kb = k.replace('weight','bias')
+                                        state_dict[kb] = model_state_dict[kb]
                         else:
                             logger.info(f"Dropping parameter {k}")
 
