@@ -69,7 +69,7 @@ parser.add_argument('--skip_timesteps', type=int, required = False, default = 0,
                    help='how many diffusion steps are gonna be skipped')
 
 parser.add_argument('--prefix', type = str, required = False, default = '',
-                    help='prefix for output files')
+                    help='prefix for output files (trailing `/` matters)')
 
 parser.add_argument('--num_batches', type = int, default = 1, required = False,
                     help='number of batches')
@@ -214,9 +214,9 @@ if args.cpu:
     model_config['use_fp16'] = False
 
 # Create output folders
-os.makedirs("output", exist_ok = True)
-os.makedirs("output_npy", exist_ok = True)
-    
+os.makedirs(os.path.join("output", os.path.dirname(args.prefix)), exist_ok = True)
+os.makedirs(os.path.join("output_npy", os.path.dirname(args.prefix)), exist_ok = True)
+
 # Load models
 model, diffusion = create_model_and_diffusion(**model_config)
 model.load_state_dict(model_state_dict, strict=True)
